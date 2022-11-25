@@ -18,7 +18,7 @@
 use anyhow::{anyhow, Context, Result};
 
 use std::convert::{TryFrom, TryInto};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -289,6 +289,18 @@ impl IioThread {
                 )
                 .unwrap();
 
+                let mut file = {
+                    let now = std::time::SystemTime::now();
+                    let ts = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                    let path = format!("/tmp/tacd-adc-{}.csv", ts);
+
+                    println!("Logging raw power board adc values to {}", &path);
+
+                    std::fs::File::create(path).unwrap()
+                };
+
+                file.write_all(b"Nanoseconds since start, volt raw, current raw\n").unwrap();
+
                 // Stop running as soon as the last reference to this Arc<IioThread>
                 // is dropped (e.g. the weak reference can no longer be upgraded).
                 while let Some(thread) = thread_weak.upgrade() {
@@ -324,6 +336,17 @@ impl IioThread {
                         .unwrap();
 
                     thread.timestamp.store(ts, Ordering::Release);
+
+                    file.write_all(
+                        format!(
+                            "{}, {}, {}\n",
+                            ts,
+                            thread.values[8].load(Ordering::Relaxed),
+                            thread.values[9].load(Ordering::Relaxed)
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
                 }
             })
             .unwrap();
