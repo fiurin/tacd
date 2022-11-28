@@ -32,6 +32,8 @@ use industrial_io::Channel;
 use log::{debug, warn};
 use thread_priority::*;
 
+use crate::digital_io::{find_line, LineRequestFlags};
+
 // Hard coded list of channels using the internal STM32MP1 ADC.
 // Consists of the IIO channel name, the location of the calibration data
 // in the device tree and an internal name for the channel.
@@ -299,7 +301,15 @@ impl IioThread {
                     std::fs::File::create(path).unwrap()
                 };
 
-                file.write_all(b"Nanoseconds since start, volt raw, current raw\n").unwrap();
+                file.write_all(
+                    b"Nanoseconds since start, volt raw, current raw, values look fishy\n",
+                )
+                .unwrap();
+
+                let discharge_line = find_line("IO1")
+                    .unwrap()
+                    .request(LineRequestFlags::OUTPUT, 1, "tacd")
+                    .unwrap();
 
                 // Stop running as soon as the last reference to this Arc<IioThread>
                 // is dropped (e.g. the weak reference can no longer be upgraded).
@@ -337,14 +347,20 @@ impl IioThread {
 
                     thread.timestamp.store(ts, Ordering::Release);
 
+                    let dut_volt = thread.values[8].load(Ordering::Relaxed);
+                    let dut_curr = thread.values[9].load(Ordering::Relaxed);
+
+                    // dut_volt == 0 would mean input voltage les tha -6V (should not hapen)
+                    // dut_volt or dut_curr with the upper four bits set is not possible accoring
+                    // to the datasheet.
+                    let dut_is_fishy =
+                        (dut_volt == 0) || (dut_volt & 0xf000 != 0) || (dut_curr & 0xf000 != 0);
+
+                    discharge_line.set_value(1 - (dut_is_fishy as u8)).unwrap();
+
                     file.write_all(
-                        format!(
-                            "{}, {}, {}\n",
-                            ts,
-                            thread.values[8].load(Ordering::Relaxed),
-                            thread.values[9].load(Ordering::Relaxed)
-                        )
-                        .as_bytes(),
+                        format!("{}, {}, {}, {}\n", ts, dut_volt, dut_curr, dut_is_fishy)
+                            .as_bytes(),
                     )
                     .unwrap();
                 }
