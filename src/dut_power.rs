@@ -58,7 +58,6 @@ const MAX_VOLTAGE: f32 = 48.0;
 const MIN_VOLTAGE: f32 = -1.0;
 
 const PWR_LINE_ASSERTED: u8 = 0;
-const DISCHARGE_LINE_ASSERTED: u8 = 0;
 
 #[derive(PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum OutputRequest {
@@ -174,16 +173,8 @@ pub struct DutPwrThread {
 }
 
 /// Bring the outputs into a fail safe mode
-fn fail(
-    reason: OutputState,
-    pwr_line: &LineHandle,
-    discharge_line: &LineHandle,
-    fail_state: &AtomicU8,
-) {
+fn fail(reason: OutputState, pwr_line: &LineHandle, fail_state: &AtomicU8) {
     pwr_line.set_value(1 - PWR_LINE_ASSERTED).unwrap();
-    discharge_line
-        .set_value(1 - DISCHARGE_LINE_ASSERTED)
-        .unwrap();
     fail_state.store(reason as u8, Ordering::Relaxed);
 }
 
@@ -283,14 +274,7 @@ impl DutPwrThread {
                     .request(LineRequestFlags::OUTPUT, 1 - PWR_LINE_ASSERTED, "tacd")
                     .unwrap();
 
-                let discharge_line = find_line("IO1")
-                    .unwrap()
-                    .request(
-                        LineRequestFlags::OUTPUT,
-                        1 - DISCHARGE_LINE_ASSERTED,
-                        "tacd",
-                    )
-                    .unwrap();
+                println!("This tacd build uses the DUT_DISCH line for debugging. It will not work as expected");
 
                 realtime_priority();
 
@@ -318,12 +302,7 @@ impl DutPwrThread {
                             .unwrap_or(false);
 
                         if too_old {
-                            fail(
-                                OutputState::RealtimeViolation,
-                                &pwr_line,
-                                &discharge_line,
-                                &state,
-                            );
+                            fail(OutputState::RealtimeViolation, &pwr_line, &state);
                         } else {
                             // We have a fresh ADC value. Signal "everything is well"
                             // to the watchdog task.
@@ -348,7 +327,7 @@ impl DutPwrThread {
                     // overvoltage condition. Instead turn the output off and
                     // go back to measuring.
                     if volt > MAX_VOLTAGE {
-                        fail(OutputState::OverVoltage, &pwr_line, &discharge_line, &state);
+                        fail(OutputState::OverVoltage, &pwr_line, &state);
 
                         continue;
                     }
@@ -357,12 +336,7 @@ impl DutPwrThread {
                     // polarity inversion. Turn off, go back to start, do not
                     // collect $200.
                     if volt < MIN_VOLTAGE {
-                        fail(
-                            OutputState::InvertedPolarity,
-                            &pwr_line,
-                            &discharge_line,
-                            &state,
-                        );
+                        fail(OutputState::InvertedPolarity, &pwr_line, &state);
 
                         continue;
                     }
@@ -370,7 +344,7 @@ impl DutPwrThread {
                     // Don't even look at the requests if there is an ongoin
                     // overcurrent condition.
                     if curr > MAX_CURRENT {
-                        fail(OutputState::OverCurrent, &pwr_line, &discharge_line, &state);
+                        fail(OutputState::OverCurrent, &pwr_line, &state);
 
                         continue;
                     }
@@ -380,21 +354,14 @@ impl DutPwrThread {
                     match req {
                         OutputRequest::Idle => {}
                         OutputRequest::On => {
-                            discharge_line
-                                .set_value(1 - DISCHARGE_LINE_ASSERTED)
-                                .unwrap();
                             pwr_line.set_value(PWR_LINE_ASSERTED).unwrap();
                             state.store(OutputState::On as u8, Ordering::Relaxed);
                         }
                         OutputRequest::Off => {
-                            discharge_line
-                                .set_value(1 - DISCHARGE_LINE_ASSERTED)
-                                .unwrap();
                             pwr_line.set_value(1 - PWR_LINE_ASSERTED).unwrap();
                             state.store(OutputState::Off as u8, Ordering::Relaxed);
                         }
                         OutputRequest::OffDischarge => {
-                            discharge_line.set_value(DISCHARGE_LINE_ASSERTED).unwrap();
                             pwr_line.set_value(1 - PWR_LINE_ASSERTED).unwrap();
                             state.store(OutputState::OffDischarge as u8, Ordering::Relaxed);
                         }
@@ -402,7 +369,7 @@ impl DutPwrThread {
                 }
 
                 // Make sure to enter fail safe mode before leaving the thread
-                fail(OutputState::Off, &pwr_line, &discharge_line, &state);
+                fail(OutputState::Off, &pwr_line, &state);
             })
             .unwrap();
 
